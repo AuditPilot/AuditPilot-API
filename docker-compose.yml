@@ -1,0 +1,30 @@
+﻿services:
+  api:
+    build: .
+    image: auditpilot-api:latest
+    ports:
+      - "${PORT:-8080}:8080"
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 8080
+      SERVE_STATIC: "0"
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongo:27017/auditpilot}
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+volumes:
+  mongo-data:

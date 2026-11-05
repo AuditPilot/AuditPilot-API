@@ -1,0 +1,15 @@
+﻿{
+  "include": ["server/**/*.ts", "migrate-ownership.ts"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "compilerOptions": {
+    "incremental": true,
+    "noEmit": true,
+    "module": "ESNext",
+    "strict": true,
+    "lib": ["esnext"],
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "types": ["node"]
+  }
+}
