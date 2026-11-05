@@ -1,0 +1,16 @@
+
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "auditpilot-api",
+  "main": "server/worker.ts",
+  "compatibility_date": "2026-11-05",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "CLIENT_ORIGIN": "https://auditpilot.beingshaeel.workers.dev"
+  },
+  "observability": {
+    "enabled": true
+  }
+}
