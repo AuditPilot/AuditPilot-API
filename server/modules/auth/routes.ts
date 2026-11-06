@@ -56,7 +56,12 @@ authRouter.get("/auth/github/callback", async (req: Request, res: Response) => {
   res.clearCookie(GH_STATE_COOKIE, cookieOptions());
 
   try {
-    const rawToken = await exchangeOAuthCode(String(code));
+    const redirectUri =
+    process.env.GITHUB_REDIRECT_URI || `${req.protocol}://${req.get("host")}/api/auth/github/callback`;
+    const rawToken = await exchangeOAuthCode(
+    String(code),
+    redirectUri,
+    );
     const profile = await fetchGitHubProfile(rawToken);
     const user = await syncUser(profile, rawToken);
 

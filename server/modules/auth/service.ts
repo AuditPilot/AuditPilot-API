@@ -48,7 +48,7 @@ export function githubOAuthUrl(redirectUri: string, state: string): string {
   return `https://github.com/login/oauth/authorize?client_id=${process.env.GITHUB_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&scope=repo%20read:user&state=${encodeURIComponent(state)}`;
 }
 
-export async function exchangeOAuthCode(code: string): Promise<string> {
+export async function exchangeOAuthCode(code: string,redirectUri: string ): Promise<string> {
   const res = await fetch("https://github.com/login/oauth/access_token", {
     method: "POST",
     headers: {
@@ -60,12 +60,17 @@ export async function exchangeOAuthCode(code: string): Promise<string> {
       client_id: process.env.GITHUB_CLIENT_ID,
       client_secret: process.env.GITHUB_CLIENT_SECRET,
       code,
+      redirect_uri: redirectUri,
     }),
   });
 
   const data = (await res.json()) as OAuthTokenResponse;
-  if (!data.access_token) {
-    throw new Error(data.error_description || "Failed to obtain access token from GitHub");
+  if (!res.ok || !data.access_token) {
+    throw new Error(
+      data.error_description ||
+      data.error ||
+      `GitHub token exchange failed: ${res.status}`,
+    );
   }
   return data.access_token;
 }
