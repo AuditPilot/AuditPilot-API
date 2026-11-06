@@ -1,3 +1,4 @@
+import { connectDB } from "./config/mongo";
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
@@ -27,6 +28,18 @@ declare module "http" {
  */
 export function createApp(): express.Express {
   const app = express();
+  app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (error) {
+    console.error("MongoDB connection failed:", error);
+
+    res.status(503).json({
+      message: "Database temporarily unavailable",
+    });
+  }
+});
   app.set("trust proxy", 1);
 
   // Cookie-auth browser clients on separate hosts (static site vs API

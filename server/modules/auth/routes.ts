@@ -50,6 +50,19 @@ authRouter.get("/auth/github/callback", async (req: Request, res: Response) => {
   // 1. Verify state cookie vs param (CSRF)
   const cookieState = (req.cookies?.[GH_STATE_COOKIE] as string) || "";
   const paramState = typeof state === "string" ? state : "";
+  logger.info({
+  hasCookieHeader: Boolean(req.headers.cookie),
+  hasParsedCookie: Boolean(req.cookies),
+  hasStateCookie: Boolean(cookieState),
+  hasQueryState: Boolean(paramState),
+  cookieStateLength: cookieState.length,
+  queryStateLength: paramState.length,
+  stateMatches: Boolean(
+    paramState &&
+    cookieState &&
+    safeEqual(paramState, cookieState)
+  ),
+}, "github oauth state diagnostics");
   if (!paramState || !cookieState || !safeEqual(paramState, cookieState)) {
     return res.status(403).send("OAuth state validation failed. Please restart sign-in.");
   }
