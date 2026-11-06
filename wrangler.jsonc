@@ -8,7 +8,8 @@
     "nodejs_compat"
   ],
   "vars": {
-    "CLIENT_ORIGIN": "https://auditpilot.beingshaeel.workers.dev"
+    "CLIENT_ORIGIN": "https://auditpilot.beingshaeel.workers.dev",
+    "ENCRYPTION_KEY": "6b39cb4b1234061d6d445a7caf15f95e8ef3744d324d3c20b84e9cca69e6fcc6"
   },
   "observability": {
     "enabled": true
