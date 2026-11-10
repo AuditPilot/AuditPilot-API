@@ -3,6 +3,7 @@ import { runRepoAudit } from "../audits/service";
 import { reviewPullRequest } from "../reviews/service";
 import { generateInsightsReport } from "../reports/service";
 import { githubClientFromToken } from "../../integrations/github/client";
+import { providerForUser } from "../workspaces/provider-resolution";
 import { AppError } from "../../middleware/errorHandler";
 import { logger } from "../../config/logger";
 import { release, type UsageAction } from "../usage/service";
@@ -95,10 +96,16 @@ const HANDLERS: Record<JobType, Handler> = {
       percent: 40,
       message: `Reviewing changes for PR #${number}…`,
     });
-    const token = await requireGithubToken(userId);
-    const gh = githubClientFromToken(token);
+    const provider = await providerForUser(userId);
 
-    const issues = await reviewPullRequest({ owner, repo, number, gh, userId, jobId: String(job._id) });
+    const issues = await reviewPullRequest({
+      owner,
+      repo,
+      number: Number(number),
+      provider,
+      userId,
+      jobId: String(job._id),
+    });
 
     return { issues, count: issues.length };
   },

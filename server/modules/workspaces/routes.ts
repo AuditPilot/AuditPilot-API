@@ -4,8 +4,12 @@ import { requireAuth } from "../../middleware/auth";
 import { AppError } from "../../middleware/errorHandler";
 import { resolveWorkspaceMember, requireRole } from "../../middleware/workspace";
 import { ProviderConnection } from "../../models/ProviderConnection";
+import { Repository, type RepositoryDocument } from "../../models/Repository";
+import { PullRequest, type PullRequestState } from "../../models/PullRequest";
 import { paramOf } from "../../lib/params";
 import { type WorkspaceRole } from "../../models/WorkspaceMember";
+import { providerForWorkspace } from "./provider-resolution";
+import { syncRepositoryRecord, syncRepositoryPullRequests } from "./sync";
 
 /** Express 5 params can be string|string[] — normalize to a plain string. */
 const wsId = (req: Request) => paramOf(req, "workspaceId");
@@ -28,7 +32,7 @@ import {
 export const workspacesRouter = Router();
 
 /** Route-body validation (zod) — the pattern new modules follow. */
-function parseBody<T>(schema: z.ZodType<T>, body: unknown): T {
+function parseBody<S extends z.ZodTypeAny>(schema: S, body: unknown): z.output<S> {
   const result = schema.safeParse(body);
   if (!result.success) {
     throw AppError.badRequest("Invalid request body", result.error.flatten());
@@ -343,6 +347,155 @@ workspacesRouter.post(
         fullName: repository.ownerLabels.fullName,
         syncState: repository.syncState,
       },
+    });
+  },
+);
+
+// ---------------------------------------------------------------------------
+// Sync + repository-scoped pull requests (mirror-backed; roadmap M2)
+// ---------------------------------------------------------------------------
+
+const repoIdOf = (req: Request) => paramOf(req, "repoId");
+
+type PullJsonInput = {
+  _id: unknown;
+  number: number;
+  title: string;
+  state: PullRequestState;
+  isDraft: boolean;
+  author: { login: string; avatarUrl?: string | null };
+  sourceBranch: string;
+  destinationBranch: string;
+  url: string;
+  additions: number;
+  deletions: number;
+  headSha?: string | null;
+  checkStatus: string;
+  lastSeenAt?: Date;
+};
+
+async function loadRepository(workspaceId: string, repoId: string): Promise<RepositoryDocument> {
+  if (!idSchema.safeParse(repoId).success) throw AppError.badRequest("Invalid repository id");
+  const repository = await Repository.findOne({ _id: repoId, workspaceId });
+  if (!repository) throw AppError.notFound("Repository not found");
+  return repository;
+}
+
+function pullJson(pr: PullJsonInput, repository?: { id: string; fullName: string; name: string }) {
+  return {
+    id: String(pr._id),
+    number: pr.number,
+    title: pr.title,
+    state: pr.state,
+    isDraft: pr.isDraft,
+    author: { login: pr.author.login, avatarUrl: pr.author.avatarUrl ?? null },
+    sourceBranch: pr.sourceBranch,
+    destinationBranch: pr.destinationBranch,
+    url: pr.url,
+    additions: pr.additions,
+    deletions: pr.deletions,
+    headSha: pr.headSha ?? null,
+    checkStatus: pr.checkStatus,
+    lastSeenAt: pr.lastSeenAt ?? null,
+    ...(repository ? { repository } : {}),
+  };
+}
+
+/** Sync-on-demand: refresh the repository mirror + its pull requests from the provider. */
+workspacesRouter.post(
+  "/workspaces/:workspaceId/repositories/:repoId/sync",
+  requireAuth,
+  resolveWorkspaceMember,
+  requireRole("developer"),
+  async (req: Request, res: Response) => {
+    const repository = await loadRepository(wsId(req), repoIdOf(req));
+    const provider = await providerForWorkspace(wsId(req), repository.provider);
+    const updated = await syncRepositoryRecord(repository, provider);
+    const { synced } = await syncRepositoryPullRequests(updated, provider);
+    return res.json({
+      repository: {
+        id: String(updated._id),
+        fullName: updated.ownerLabels.fullName,
+        defaultBranch: updated.defaultBranch,
+        syncState: updated.syncState,
+        lastSyncedAt: updated.lastSyncedAt,
+      },
+      pullRequestsSynced: synced,
+    });
+  },
+);
+
+/** Repository-scoped PR list (all authors, state filter, paged) — reads the mirror. */
+workspacesRouter.get(
+  "/workspaces/:workspaceId/repositories/:repoId/pulls",
+  requireAuth,
+  resolveWorkspaceMember,
+  async (req: Request, res: Response) => {
+    const repository = await loadRepository(wsId(req), repoIdOf(req));
+    const body = parseBody(
+      z.object({
+        state: z.enum(["open", "closed", "merged", "all"]).default("open"),
+        page: z.coerce.number().int().min(1).default(1),
+        perPage: z.coerce.number().int().min(1).max(100).default(25),
+      }),
+      req.query,
+    );
+    const filter: Record<string, unknown> = { workspaceId: wsId(req), repositoryId: repository._id };
+    if (body.state !== "all") filter.state = body.state;
+
+    const perPage = body.perPage;
+    const rows = (await PullRequest.find(filter)
+      .sort({ lastSeenAt: -1, number: -1 })
+      .skip((body.page - 1) * perPage)
+      .limit(perPage + 1)
+      .lean()) as unknown as PullJsonInput[];
+    const hasNext = rows.length > perPage;
+    return res.json({
+      pulls: rows.slice(0, perPage).map(pr => pullJson(pr)),
+      page: body.page,
+      hasNext,
+      repository: { id: String(repository._id), fullName: repository.ownerLabels.fullName },
+    });
+  },
+);
+
+/** Global PR inbox for the workspace — deduped across repositories via the mirror. */
+workspacesRouter.get(
+  "/workspaces/:workspaceId/pulls",
+  requireAuth,
+  resolveWorkspaceMember,
+  async (req: Request, res: Response) => {
+    const body = parseBody(
+      z.object({
+        state: z.enum(["open", "closed", "merged", "all"]).default("open"),
+        page: z.coerce.number().int().min(1).default(1),
+        perPage: z.coerce.number().int().min(1).max(100).default(25),
+      }),
+      req.query,
+    );
+    const filter: Record<string, unknown> = { workspaceId: wsId(req) };
+    if (body.state !== "all") filter.state = body.state;
+
+    const perPage = body.perPage;
+    const rows = (await PullRequest.find(filter)
+      .sort({ lastSeenAt: -1 })
+      .skip((body.page - 1) * perPage)
+      .limit(perPage + 1)
+      .populate("repositoryId", "ownerLabels name")
+      .lean()) as unknown as Array<PullJsonInput & {
+      repositoryId?: { ownerLabels?: { fullName?: string }; name?: string } | null;
+    }>;
+    const hasNext = rows.length > perPage;
+    return res.json({
+      pulls: rows.slice(0, perPage).map(pr =>
+        pullJson(pr, {
+          id: String((pr.repositoryId as unknown as { _id?: string })?._id ?? pr.repositoryId ?? ""),
+          fullName: pr.repositoryId?.ownerLabels?.fullName ?? "",
+          name: pr.repositoryId?.name ?? "",
+        }),
+      ),
+      page: body.page,
+      hasNext,
     });
   },
 );

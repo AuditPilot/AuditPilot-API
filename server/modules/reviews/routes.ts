@@ -1,69 +1,100 @@
-import { Router, type Request, Response } from "express";
+import { Router, type Request, type Response } from "express";
+import { z } from "zod";
 import { requireAuth } from "../../middleware/auth";
-import { githubClientFromToken, GitHubApiError } from "../../integrations/github/client";
 import { AppError } from "../../middleware/errorHandler";
 import { recordAuditLog } from "../../middleware/auditLog";
 import { logger } from "../../config/logger";
 import { reserve, release, limitReachedError } from "../usage/service";
 import { reviewPullRequest } from "./service";
+import { providerForUser } from "../workspaces/provider-resolution";
+import { PullRequest } from "../../models/PullRequest";
+import { Workspace } from "../../models/Workspace";
+import { paramOf } from "../../lib/params";
+
+/**
+ * Legacy user-scoped review routes, rewired onto the provider factory (M2).
+ * PR listing reads the personal-workspace mirror (all authors, deduped across
+ * repositories) — the author-restricted `search/issues` query is deleted.
+ * The M2 frontend switches to the workspace-scoped endpoints on the same
+ * service; these paths remain through the transition.
+ */
 
 export const reviewsRouter = Router();
 
-function tokenOf(req: Request): string | undefined {
-  return (req as { githubAccessToken?: string }).githubAccessToken;
+const numberParam = (req: Request) => paramOf(req, "number");
+
+function parseQuery<S extends z.ZodTypeAny>(schema: S, query: unknown): z.output<S> {
+  const result = schema.safeParse(query);
+  if (!result.success) throw AppError.badRequest("Invalid query", result.error.flatten());
+  return result.data;
 }
 
-// === My pull requests (search: authored by me, open) ===
+const inboxQuery = z.object({
+  state: z.enum(["open", "closed", "merged", "all"]).default("open"),
+  page: z.coerce.number().int().min(1).default(1),
+  perPage: z.coerce.number().int().min(1).max(100).default(25),
+});
 
-interface GitHubSearchIssue {
-  id: number;
-  number: number;
-  title: string;
-  state: string;
-  repository_url: string;
-  user: { login: string; avatar_url: string };
-  created_at: string;
-  updated_at: string;
-  html_url: string;
+function errStatus(error: unknown): { status: number; message: string } {
+  if (error instanceof AppError) return { status: error.status, message: error.message };
+  return { status: 500, message: (error as Error).message };
 }
 
-interface GitHubTokenUser {
-  login: string;
-  avatar_url: string;
-}
+// === Pull request inbox (personal workspace mirror — all authors) ===
 
 reviewsRouter.get("/pulls", requireAuth, async (req: Request, res: Response) => {
-  const gh = githubClientFromToken(tokenOf(req));
-
   try {
-    const userData = await gh.get<GitHubTokenUser>("/user");
-    const userLogin = userData.login;
+    const query = parseQuery(inboxQuery, req.query);
+    const personal = await Workspace.findOne({ owner: req.user!._id, type: "personal" });
+    if (!personal) return res.json({ pulls: [], page: 1, hasNext: false });
 
-    const searchData = await gh.get<{ items: GitHubSearchIssue[] }>(
-      `/search/issues?q=is:open+is:pr+author:${encodeURIComponent(userLogin)}`,
-    );
-
-    const pulls = (searchData.items || []).map(item => {
-      const repoFull = item.repository_url.replace("https://api.github.com/repos/", "");
-      const [owner, name] = repoFull.split("/");
-      return {
-        id: item.id, // preserves original response contract
-        number: item.number,
-        title: item.title,
-        state: item.state,
-        repo: { owner, name, full_name: repoFull },
-        user: { login: item.user.login, avatar_url: item.user.avatar_url },
-        created_at: item.created_at,
-        updated_at: item.updated_at,
-        html_url: item.html_url,
-      };
+    const filter: Record<string, unknown> = { workspaceId: personal._id };
+    if (query.state !== "all") filter.state = query.state;
+    const rows = (await PullRequest.find(filter)
+      .sort({ lastSeenAt: -1 })
+      .skip((query.page - 1) * query.perPage)
+      .limit(query.perPage + 1)
+      .populate("repositoryId", "ownerLabels name")
+      .lean()) as unknown as Array<{
+      _id: unknown;
+      number: number;
+      title: string;
+      state: "open" | "closed" | "merged";
+      isDraft: boolean;
+      author: { login: string; avatarUrl?: string | null };
+      sourceBranch: string;
+      destinationBranch: string;
+      url: string;
+      headSha?: string | null;
+      lastSeenAt?: Date;
+      repositoryId?: { ownerLabels?: { fullName?: string }; name?: string } | null;
+    }>;
+    const hasNext = rows.length > query.perPage;
+    return res.json({
+      pulls: rows.slice(0, query.perPage).map(pr => ({
+        id: String(pr._id),
+        number: pr.number,
+        title: pr.title,
+        state: pr.state,
+        isDraft: pr.isDraft,
+        author: pr.author,
+        sourceBranch: pr.sourceBranch,
+        destinationBranch: pr.destinationBranch,
+        url: pr.url,
+        headSha: pr.headSha ?? null,
+        lastSeenAt: pr.lastSeenAt ?? null,
+        repository: {
+          fullName: pr.repositoryId?.ownerLabels?.fullName ?? "",
+          name: pr.repositoryId?.name ?? "",
+        },
+      })),
+      page: query.page,
+      hasNext,
     });
-
-    return res.json(pulls);
   } catch (error) {
-    const message = error instanceof GitHubApiError ? error.message : "Failed to fetch Pull Requests";
-    logger.error({ err: (error as Error).message }, "fetch pulls error");
-    return res.status(500).json({ message });
+    const { status, message } = errStatus(error);
+    logger.error({ err: message }, "fetch pulls error");
+    return res.status(status).json({ message });
   }
 });
 
@@ -73,14 +104,19 @@ reviewsRouter.get(
   "/repos/:owner/:repo/pulls/:number/files",
   requireAuth,
   async (req: Request, res: Response) => {
-    const { owner, repo, number } = req.params;
-    const gh = githubClientFromToken(tokenOf(req));
+    const owner = String(req.params.owner);
+    const repo = String(req.params.repo);
     try {
-      const files = await gh.get(`/repos/${owner}/${repo}/pulls/${number}/files`);
+      const provider = await providerForUser(String(req.user!._id));
+      const files = [];
+      for await (const file of provider.listPullRequestFiles(owner, repo, Number(numberParam(req)), { perPage: 100 })) {
+        files.push(file);
+        if (files.length >= 300) break; // hard cap for the endpoint surface
+      }
       return res.json(files);
     } catch (error) {
-      const message = error instanceof GitHubApiError ? error.message : "Failed to fetch PR files";
-      return res.status(500).json({ message });
+      const { status, message } = errStatus(error);
+      return res.status(status).json({ message });
     }
   },
 );
@@ -93,9 +129,8 @@ reviewsRouter.post(
   async (req: Request, res: Response) => {
     const owner = String(req.params.owner);
     const repo = String(req.params.repo);
-    const number = String(req.params.number);
+    const number = Number(numberParam(req));
     const user = req.user!;
-    const gh = githubClientFromToken(tokenOf(req));
 
     // Usage reservation — atomic gate, ALL plans count PR reviews now
     // (removes the legacy starter-only counting quirk). Released if the
@@ -108,18 +143,14 @@ reviewsRouter.post(
     }
 
     try {
-      // AI gateway review (retries, schema gate, cost tracking) — extracted
-      // to service so the webhook-triggered job worker (C9) reuses it.
-      const issues = await reviewPullRequest({ owner, repo, number, gh, userId: String(user._id) });
-
+      const provider = await providerForUser(String(user._id));
+      const issues = await reviewPullRequest({ owner, repo, number, provider, userId: String(user._id) });
       return res.json({ issues });
     } catch (error) {
       await release(user._id, "pr-review");
-      if (error instanceof AppError) {
-        return res.status(error.status).json({ message: error.message });
-      }
-      logger.error({ err: (error as Error).message, owner, repo, number }, "PR audit error");
-      return res.status(500).json({ message: (error as Error).message });
+      const { status, message } = errStatus(error);
+      if (status >= 500) logger.error({ err: message, owner, repo, number }, "PR audit error");
+      return res.status(status).json({ message });
     }
   },
 );
@@ -130,9 +161,10 @@ reviewsRouter.post(
   "/repos/:owner/:repo/pulls/:number/fix",
   requireAuth,
   async (req: Request, res: Response) => {
-    const { owner, repo, number } = req.params;
+    const owner = String(req.params.owner);
+    const repo = String(req.params.repo);
+    const number = Number(numberParam(req));
     const { issues } = (req.body ?? {}) as { issues?: unknown[] };
-    const gh = githubClientFromToken(tokenOf(req));
 
     interface FixIssue {
       file?: string;
@@ -145,23 +177,23 @@ reviewsRouter.post(
       if (!Array.isArray(issues)) {
         throw AppError.badRequest("issues (array) is required");
       }
-      const prData = await gh.get<{ head: { ref: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
-      const headBranch = prData.head.ref;
+      const provider = await providerForUser(String(req.user!._id));
+      const pr = await provider.fetchPullRequest(owner, repo, number);
+      const headBranch = pr.sourceBranch;
+      if (!headBranch) throw AppError.badRequest("pull request has no head branch");
 
       for (const issue of (issues as FixIssue[]).filter(i => i?.fix)) {
         try {
-          const fileData = await gh.get<{ content: string; sha: string }>(
-            `/repos/${owner}/${repo}/contents/${issue.file || issue.file_path}?ref=${headBranch}`,
-          );
-          const currentContent = Buffer.from(fileData.content, "base64").toString("utf-8");
+          const filePath = issue.file || issue.file_path;
+          if (!filePath) continue;
+          const currentContent = await provider.fetchFileContent(owner, repo, filePath, headBranch);
+          if (currentContent === null) continue;
           const newContent = currentContent.replace(issue.fix!.old_code, issue.fix!.new_code);
-
           if (currentContent !== newContent) {
-            await gh.put(`/repos/${owner}/${repo}/contents/${issue.file || issue.file_path}`, {
-              message: `AuditPilot: Correcting PR #${number} - ${issue.description || "fix"}`,
-              content: Buffer.from(newContent).toString("base64"),
-              sha: fileData.sha,
+            await provider.createCommit(owner, repo, {
               branch: headBranch,
+              files: [{ path: filePath, content: newContent }],
+              message: `AuditPilot: Correcting PR #${number} - ${issue.description || "fix"}`,
             });
           }
         } catch (err) {
@@ -171,45 +203,27 @@ reviewsRouter.post(
 
       return res.json({ message: "PR corrected successfully" });
     } catch (error) {
-      if (error instanceof AppError) {
-        return res.status(error.status).json({ message: error.message });
-      }
-      logger.error({ err: (error as Error).message }, "PR fix error");
-      return res.status(500).json({ message: (error as Error).message });
+      const { status, message } = errStatus(error);
+      if (status >= 500) logger.error({ err: message }, "PR fix error");
+      return res.status(status).json({ message });
     }
   },
 );
 
-// === Merge PR (squash) ===
+// === Merge PR ===
 
 reviewsRouter.put(
   "/repos/:owner/:repo/pulls/:number/merge",
   requireAuth,
   async (req: Request, res: Response) => {
-    const { owner, repo, number } = req.params;
-    const gh = githubClientFromToken(tokenOf(req));
+    const owner = String(req.params.owner);
+    const repo = String(req.params.repo);
+    const number = Number(numberParam(req));
 
     // NOTE: merging a PR is NOT a review action — it consumes no quota.
-    // (The legacy limit gate + doc counter that lived here are gone.)
-
     try {
-      let branchName = "";
-      try {
-        const prData = await gh.get<{ head: { ref: string } }>(`/repos/${owner}/${repo}/pulls/${number}`);
-        branchName = prData.head?.ref || "";
-      } catch {
-        // proceed without branch info (merge can still happen)
-      }
-
-      await gh.put(`/repos/${owner}/${repo}/pulls/${number}/merge`, {
-        commit_title: `AuditPilot: Merging PR #${number}`,
-        merge_method: "squash",
-      });
-
-      if (branchName && (branchName.startsWith("audit-") || branchName.startsWith("auditpilot-fix-"))) {
-        logger.info({ branchName }, "deleting temporary fix branch");
-        await gh.del(`/repos/${owner}/${repo}/git/refs/heads/${branchName}`);
-      }
+      const provider = await providerForUser(String(req.user!._id));
+      await provider.mergePullRequest(owner, repo, number, { method: "squash" });
 
       recordAuditLog(req, {
         action: "pr.merged",
@@ -219,29 +233,29 @@ reviewsRouter.put(
 
       return res.json({ message: "PR merged and branch cleaned up successfully" });
     } catch (error) {
-      const message = error instanceof GitHubApiError ? error.message : (error as Error).message;
+      const { status, message } = errStatus(error);
       logger.error({ err: message }, "merge error");
-      return res.status(500).json({ message });
+      return res.status(status).json({ message });
     }
   },
 );
 
-// === PR detail (full PR object — includes body, base/head refs & repo) ===
+// === PR detail ===
 
 reviewsRouter.get(
   "/repos/:owner/:repo/pulls/:number",
   requireAuth,
   async (req: Request, res: Response) => {
-    const { owner, repo, number } = req.params;
-    const gh = githubClientFromToken(tokenOf(req));
-
+    const owner = String(req.params.owner);
+    const repo = String(req.params.repo);
     try {
-      const pr = await gh.get(`/repos/${owner}/${repo}/pulls/${number}`);
+      const provider = await providerForUser(String(req.user!._id));
+      const pr = await provider.fetchPullRequest(owner, repo, Number(numberParam(req)));
       return res.json(pr);
     } catch (error) {
-      const message = error instanceof GitHubApiError ? error.message : "Failed to fetch Pull Request";
-      logger.error({ err: message, owner, repo, number }, "PR detail fetch error");
-      return res.status(500).json({ message });
+      const { status, message } = errStatus(error);
+      logger.error({ err: message, owner, repo, number: numberParam(req) }, "PR detail fetch error");
+      return res.status(status).json({ message });
     }
   },
 );
@@ -252,26 +266,23 @@ reviewsRouter.patch(
   "/repos/:owner/:repo/pulls/:number",
   requireAuth,
   async (req: Request, res: Response) => {
-    const { owner, repo, number } = req.params;
-    const { base, title, body, state } = (req.body ?? {}) as {
+    const owner = String(req.params.owner);
+    const repo = String(req.params.repo);
+    const number = Number(numberParam(req));
+    const body = (req.body ?? {}) as {
       base?: string;
       title?: string;
       body?: string;
-      state?: string;
+      state?: "open" | "closed";
     };
-    const gh = githubClientFromToken(tokenOf(req));
 
     try {
-      const updatedPR = await gh.patch(`/repos/${owner}/${repo}/pulls/${number}`, {
-        base,
-        title,
-        body,
-        state,
-      });
-      return res.json(updatedPR);
+      const provider = await providerForUser(String(req.user!._id));
+      const pr = await provider.updatePullRequest(owner, repo, number, body);
+      return res.json(pr);
     } catch (error) {
-      const message = error instanceof GitHubApiError ? error.message : "Failed to update Pull Request";
-      return res.status(500).json({ message });
+      const { status, message } = errStatus(error);
+      return res.status(status).json({ message });
     }
   },
 );

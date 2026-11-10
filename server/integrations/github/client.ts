@@ -19,6 +19,8 @@ interface RequestOpts {
   body?: unknown;
   /** Return raw text (for `Accept: application/vnd.github.v3.raw`). */
   raw?: boolean;
+  /** Override the Accept header (e.g. `application/vnd.github.v3.diff`). */
+  accept?: string;
   timeoutMs?: number;
 }
 
@@ -41,7 +43,7 @@ export class GitHubClient {
   constructor(private readonly token: GitHubToken) {}
 
   async request<T = unknown>(path: string, opts: RequestOpts = {}): Promise<T> {
-    const { method = "GET", body, raw = false, timeoutMs = DEFAULT_TIMEOUT_MS } = opts;
+    const { method = "GET", body, raw = false, accept, timeoutMs = DEFAULT_TIMEOUT_MS } = opts;
 
     let lastError: Error | null = null;
 
@@ -52,7 +54,7 @@ export class GitHubClient {
           method,
           headers: {
             Authorization: `token ${this.token}`,
-            Accept: raw ? "application/vnd.github.v3.raw" : "application/vnd.github.v3+json",
+            Accept: raw ? "application/vnd.github.v3.raw" : accept ?? "application/vnd.github.v3+json",
             "Content-Type": "application/json",
             "User-Agent": USER_AGENT,
           },
