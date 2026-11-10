@@ -16,7 +16,7 @@ afterAll(async () => {
 
 /** Test double standing in for the OpenAI client (chat.completions.create). */
 interface FakeInvocation {
-  input: unknown;
+  input?: unknown;
   result: unknown; // resolves with this, or throws
 }
 function fakeClient(script: FakeInvocation[]) {
@@ -47,7 +47,7 @@ const ctx: RunTaskContext = { userId: "5f1a2b3c4d5e6f7890a1b2c3" };
 describe("AI gateway", () => {
   it("routes a triage task to the triage model", async () => {
     const { client, invocations } = fakeClient([{ result: { choices: [{ message: { content: VALID_AUDIT_OUTPUT } }] } }]);
-    const { data, model } = await runTask("repo-audit", { system: "s", user: "u" }, { ...ctx, client });
+    const { data, model } = await runTask<{ issues: unknown[] }>("repo-audit", { system: "s", user: "u" }, { ...ctx, client });
 
     expect(model).toBe(DEFAULT_TRIAGE_MODEL);
     expect(data.issues).toHaveLength(1);
@@ -63,7 +63,7 @@ describe("AI gateway", () => {
       { result: { choices: [{ message: { content: VALID_AUDIT_OUTPUT } }] } },
     ]);
 
-    const { data, attempts } = await runTask("repo-audit", { system: "s", user: "u" }, { ...ctx, client: good.client });
+    const { data, attempts } = await runTask<{ issues: unknown[] }>("repo-audit", { system: "s", user: "u" }, { ...ctx, client: good.client });
     expect(attempts).toBe(3);
     expect(data.issues).toHaveLength(1);
 
@@ -96,7 +96,7 @@ describe("AI gateway", () => {
       { result: { choices: [{ message: { content: VALID_AUDIT_OUTPUT } }] } },
     ]);
 
-    const { attempts, data } = await runTask("repo-audit", { system: "s", user: "u" }, { ...ctx, client: good.client });
+    const { attempts, data } = await runTask<{ issues: unknown[] }>("repo-audit", { system: "s", user: "u" }, { ...ctx, client: good.client });
     expect(attempts).toBe(2);
     expect(data.issues).toHaveLength(1);
   });

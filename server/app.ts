@@ -14,6 +14,7 @@ import { reportsRouter } from "./modules/reports/routes";
 import { billingRouter } from "./modules/billing/routes";
 import { jobsRouter } from "./modules/jobs/routes";
 import { prManagerRouter } from "./modules/pr-manager/routes";
+import { workspacesRouter } from "./modules/workspaces/routes";
 import { logger } from "./config/logger";
 
 declare module "http" {
@@ -84,6 +85,7 @@ export function createApp(): express.Express {
   app.use("/api", billingRouter);
   app.use("/api", jobsRouter);
   app.use("/api", prManagerRouter);
+  app.use("/api", workspacesRouter);
 
   logger.debug("app assembled");
 

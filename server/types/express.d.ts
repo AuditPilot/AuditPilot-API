@@ -8,6 +8,8 @@
  */
 import type { Logger } from "../config/logger";
 import type { UserDocument } from "../models/User";
+import type { WorkspaceDocument } from "../models/Workspace";
+import type { WorkspaceMemberDocument } from "../models/WorkspaceMember";
 
 declare module "express-serve-static-core" {
   interface Request {
@@ -27,5 +29,9 @@ declare module "express-serve-static-core" {
     githubTokenEnc?: string | null;
     /** Set by middleware/auth.ts — decrypted token for outbound GitHub calls. */
     githubAccessToken?: string | null;
+    /** Set by middleware/workspace.ts — resolved from the :workspaceId route param. */
+    workspace?: WorkspaceDocument;
+    /** Set by middleware/workspace.ts — the caller's membership in req.workspace. */
+    workspaceMember?: WorkspaceMemberDocument;
   }
 }

@@ -1,6 +1,6 @@
 
 // Provided by the Cloudflare Workers runtime; it is not a standard TypeScript module.
-// @ts-ignore
+// @ts-expect-error - "cloudflare:node" is a Workers-only virtual module unknown to tsc
 import { httpServerHandler } from "cloudflare:node";
 import { app, registerTerminalHandlers } from "./app";
 

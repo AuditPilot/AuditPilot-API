@@ -1,4 +1,4 @@
-import mongoose, { type Types } from "mongoose";
+import mongoose from "mongoose";
 import { Audit, type AuditDocument } from "../../models/Audit";
 import { AuditItem, type AuditItemDocument } from "../../models/AuditItem";
 import { Report } from "../../models/Report";
@@ -6,8 +6,6 @@ import { GitHubClient, GitHubApiError } from "../../integrations/github/client";
 import { runTask, untrustedDataBlock } from "../../integrations/ai/gateway";
 import { logger } from "../../config/logger";
 import { AppError } from "../../middleware/errorHandler";
-import { assertOwnership } from "../../middleware/ownership";
-
 const SOURCE_EXTENSIONS = [".js", ".ts", ".tsx", ".jsx", ".py", ".java", ".go", ".rb", ".php", ".cs", ".rs", ".cpp", ".c"];
 const CONFIG_FILES = ["package.json", "tsconfig.json", "README.md", "requirements.txt", "Gemfile", "go.mod", "composer.json", "docker-compose.yml", "Dockerfile"];
 const AUDIT_FILE_LIMIT = 8;

@@ -1,6 +1,5 @@
 import { STRIPE_ENABLED, stripe, STRIPE_PRICE_IDS } from "../../lib/stripe";
 import { PLANS, type Plan } from "../../config/plans";
-import { logger } from "../../config/logger";
 import { User, type UserDocument } from "../../models/User";
 import { AppError } from "../../middleware/errorHandler";
 

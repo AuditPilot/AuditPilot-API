@@ -1,4 +1,4 @@
-import mongoose, { type Types } from "mongoose";
+import mongoose from "mongoose";
 import { Report, type ReportDocument } from "../../models/Report";
 import { runTask, untrustedDataBlock } from "../../integrations/ai/gateway";
 import { findOwnAuditWithItems } from "../audits/service";

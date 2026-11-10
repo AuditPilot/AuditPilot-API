@@ -18,7 +18,6 @@ import { assertOwnership } from "../../middleware/ownership";
 import { app } from "../../app";
 
 const A_ID = "a".repeat(24);
-const B_ID = "b".repeat(24);
 
 let userA: UserDocument;
 let userB: UserDocument;
@@ -125,7 +124,7 @@ describe("audit ownership (model + service level)", () => {
 });
 
 describe("ownership HTTP surface (/api)", () => {
-  let auditA: { _id: unknown };
+  let auditA: { _id: mongoose.Types.ObjectId };
   let itemA: { _id: unknown };
 
   beforeAll(async () => {

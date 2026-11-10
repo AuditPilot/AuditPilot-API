@@ -9,7 +9,10 @@
         "start": "cross-env NODE_ENV=production SERVE_STATIC=0 node dist/index.js",
         "check": "tsc --noEmit",
         "test": "vitest run --passWithNoTests",
+        "lint": "eslint server scripts",
         "migrate": "tsx migrate-ownership.ts",
+        "migrate:workspaces": "tsx scripts/migrate-workspaces.ts",
+        "workspace:rollback": "tsx scripts/rollback-workspaces.ts",
         "dev:worker": "wrangler dev"
     },
     "dependencies": {

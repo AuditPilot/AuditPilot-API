@@ -10,6 +10,18 @@ export function maskUri(uri: string): string {
 let connected = false;
 
 export async function connectDB(): Promise<void> {
+  // Already connected (e.g. by a test harness or a prior request) — never
+  // hijack a healthy connection by re-pointing mongoose at another URI.
+  if (mongoose.connection.readyState === 1) {
+    connected = true;
+    return;
+  }
+  // A connect() is already in flight — wait for it instead of racing a second one
+  if (mongoose.connection.readyState === 2) {
+    await mongoose.connection.asPromise();
+    connected = true;
+    return;
+  }
   if (connected) {
     return;
   }

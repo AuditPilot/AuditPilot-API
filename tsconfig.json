@@ -1,6 +1,6 @@
 ﻿{
-  "include": ["server/**/*.ts", "migrate-ownership.ts"],
-  "exclude": ["node_modules", "dist", "**/*.test.ts"],
+  "include": ["server/**/*.ts", "scripts/**/*.ts", "migrate-ownership.ts"],
+  "exclude": ["node_modules", "dist"],
   "compilerOptions": {
     "incremental": true,
     "noEmit": true,

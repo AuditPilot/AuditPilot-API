@@ -31,12 +31,15 @@ async function main(): Promise<void> {
 
   await mongoose.connect(uri);
 
-  const { Audit } = await import("./server/models/Audit");
-  const { AuditItem } = await import("./server/models/AuditItem");
-  const { Report } = await import("./server/models/Report");
+  const db = mongoose.connection.db;
+  if (!db) {
+    log("[migrate-ownership] FAILED: no database connection");
+    await mongoose.disconnect();
+    process.exit(1);
+  }
 
   const ownerId = new mongoose.Types.ObjectId(legacyUserId);
-  const ownerExists = await mongoose.connection.db.collection("users").countDocuments({ _id: ownerId });
+  const ownerExists = await db.collection("users").countDocuments({ _id: ownerId });
   if (ownerExists === 0) {
     log(`[migrate-ownership] ABORT: user ${legacyUserId} does not exist in this database.`);
     await mongoose.disconnect();
@@ -51,7 +54,7 @@ async function main(): Promise<void> {
   let reportCount = 0;
 
   if (!dryRun) {
-    const audits = await mongoose.connection.db.collection("audits").updateMany(
+    const audits = await db.collection("audits").updateMany(
       { $or: [{ userId: null }, { userId: { $exists: false } }] },
       { $set: { userId: ownerId } },
     );
@@ -59,25 +62,25 @@ async function main(): Promise<void> {
 
     // Items under a backfilled audit inherit that audit's owner; anything
     // still untagged (orphaned items) goes to the designated legacy user.
-    const itemRes = await mongoose.connection.db.collection("audititems").updateMany(
+    const itemRes = await db.collection("audititems").updateMany(
       { $or: [{ userId: null }, { userId: { $exists: false } }] },
       { $set: { userId: ownerId } },
     );
     itemCount = itemRes.modifiedCount;
 
-    const reportRes = await mongoose.connection.db.collection("reports").updateMany(
+    const reportRes = await db.collection("reports").updateMany(
       { $or: [{ userId: null }, { userId: { $exists: false } }] },
       { $set: { userId: ownerId } },
     );
     reportCount = reportRes.modifiedCount;
   } else {
-    auditCount = await mongoose.connection.db.collection("audits").countDocuments({
+    auditCount = await db.collection("audits").countDocuments({
       $or: [{ userId: null }, { userId: { $exists: false } }],
     });
-    itemCount = await mongoose.connection.db.collection("audititems").countDocuments({
+    itemCount = await db.collection("audititems").countDocuments({
       $or: [{ userId: null }, { userId: { $exists: false } }],
     });
-    reportCount = await mongoose.connection.db.collection("reports").countDocuments({
+    reportCount = await db.collection("reports").countDocuments({
       $or: [{ userId: null }, { userId: { $exists: false } }],
     });
   }
