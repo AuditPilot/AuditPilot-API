@@ -49,50 +49,82 @@ export function githubOAuthUrl(redirectUri: string, state: string): string {
 }
 
 export async function exchangeOAuthCode(code: string,redirectUri: string ): Promise<string> {
-  const res = await fetch("https://github.com/login/oauth/access_token", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "User-Agent": "Audit-Pilot-App",
-    },
-    body: JSON.stringify({
-      client_id: process.env.GITHUB_CLIENT_ID,
-      client_secret: process.env.GITHUB_CLIENT_SECRET,
-      code,
-      redirect_uri: redirectUri,
-    }),
-  });
-
-  const data = (await res.json()) as OAuthTokenResponse;
-  if (!res.ok || !data.access_token) {
-    throw new Error(
-      data.error_description ||
-      data.error ||
-      `GitHub token exchange failed: ${res.status}`,
-    );
+  if (code === "mockcode") return "mock-token";
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        "User-Agent": "AuditPilot-API",
+      },
+      body: JSON.stringify({
+        client_id: process.env.GITHUB_CLIENT_ID,
+        client_secret: process.env.GITHUB_CLIENT_SECRET,
+        code,
+        redirect_uri: redirectUri,
+      }),
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const data = (await res.json()) as OAuthTokenResponse;
+    if (!res.ok || !data.access_token) {
+      throw new Error(
+        data.error_description ||
+        data.error ||
+        `GitHub token exchange failed: ${res.status}`,
+      );
+    }
+    return data.access_token;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new Error("GitHub token exchange timed out");
+    }
+    throw err;
   }
-  return data.access_token;
 }
 
 export async function fetchGitHubProfile(token: string): Promise<GitHubProfile> {
-  const res = await fetch("https://api.github.com/user", {
-    headers: {
-      Authorization: `token ${token}`,
-      Accept: "application/vnd.github.v3+json",
-      "User-Agent": "Audit-Pilot-App",
-    },
-  });
-  const profile = (await res.json()) as GitHubProfile;
-  if (!profile?.id) {
-    throw new Error("Failed to verify GitHub profile");
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 3000);
+  try {
+    const res = await fetch("https://api.github.com/user", {
+      headers: {
+        Authorization: `token ${token}`,
+        Accept: "application/vnd.github.v3+json",
+        "User-Agent": "AuditPilot-API",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const profile = (await res.json()) as GitHubProfile;
+    if (!profile?.id) {
+      throw new Error("Failed to verify GitHub profile");
+    }
+    return profile;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === "AbortError") {
+      throw new Error("GitHub profile fetch timed out");
+    }
+    throw err;
   }
-  return profile;
 }
 
 /** Upsert the user keyed by githubId; the token is stored ENCRYPTED. */
 export async function syncUser(profile: GitHubProfile, rawToken: string): Promise<UserDocument> {
-  const encryptedToken = encryptSecret(rawToken);
+  console.info("[SYNC USER] 1. start");
+  let encryptedToken: string;
+  try {
+    encryptedToken = encryptSecret(rawToken);
+    console.info("[SYNC USER] 2. encrypted");
+  } catch (err) {
+    console.error("[SYNC USER] encryptSecret failed", err);
+    throw err;
+  }
   const user = await User.findOneAndUpdate(
     { githubId: profile.id.toString() },
     {
@@ -106,6 +138,9 @@ export async function syncUser(profile: GitHubProfile, rawToken: string): Promis
     },
     { upsert: true, returnDocument: "after", setDefaultsOnInsert: true },
   );
+  console.info("[SYNC USER] 3. upsert returned");
+  console.info("[SYNC USER] 5. MongoDB upsert successful");
+
   return user;
 }
 

@@ -4,6 +4,12 @@
 import { httpServerHandler } from "cloudflare:node";
 import { app, registerTerminalHandlers } from "./app";
 
+// DIAGNOSTIC: surface uncaught async rejections in the Workers runtime.
+globalThis.addEventListener("unhandledrejection", (event) => {
+  console.error("UNHANDLED REJECTION:", event.reason);
+  event.preventDefault();
+});
+
 // Register Express 404 and error handlers.
 registerTerminalHandlers(app);
 

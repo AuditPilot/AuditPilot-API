@@ -10,7 +10,7 @@ import { logger } from "../../config/logger";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
 const MAX_RETRIES = 3;
-const USER_AGENT = "Audit-Pilot-App";
+const USER_AGENT = "AuditPilot-API";
 
 export type GitHubToken = string;
 

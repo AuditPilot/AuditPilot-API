@@ -25,3 +25,9 @@ docker compose up --build -d
 ```
 
 The API is published on `http://localhost:8080`; MongoDB runs in its own container. Set `CLIENT_ORIGIN` to the frontend origin(s). For separate HTTPS sites, configure `COOKIE_SAMESITE=none`.
+
+## Cloudflare Worker
+
+The Worker allowlists the production frontend origin through `CLIENT_ORIGIN` in
+`wrangler.jsonc`. Update that value if the frontend hostname changes, then
+redeploy the Worker.

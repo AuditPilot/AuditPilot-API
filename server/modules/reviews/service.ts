@@ -1,5 +1,5 @@
-import { GitHubClient } from "../../integrations/github/client";
 import { runTask, untrustedDataBlock } from "../../integrations/ai/gateway";
+import type { SourceControlProvider } from "../../integrations/source-control/types";
 import { logger } from "../../config/logger";
 
 export interface PullReviewIssue {
@@ -14,31 +14,34 @@ export interface PullReviewIssue {
 export interface PullReviewInput {
   owner: string;
   repo: string;
-  number: string;
-  gh: GitHubClient;
+  number: number;
+  /** Resolved via the provider factory — never a raw per-request token client. */
+  provider: SourceControlProvider;
   userId?: string;
   jobId?: string;
 }
 
+/** Prompt budget: 100 files (one full page) — the legacy flow silently capped at 30. */
+const MAX_PROMPT_FILES = 100;
+
 /**
  * Fetches the PR diff and asks the AI gateway to review it.
- * Extracted from the HTTP route so the (C9) webhook-triggered job worker
- * reuses exactly the same logic.
+ * Consumes the normalized adapter contract: `patch: null` renders as
+ * "patch omitted" — never the string "undefined" (provider-abstraction.md §4).
  */
 export async function reviewPullRequest(input: PullReviewInput): Promise<PullReviewIssue[]> {
-  const { owner, repo, number, gh } = input;
+  const { owner, repo, number, provider } = input;
 
-  interface PRFileDiff {
-    filename: string;
-    patch?: string;
+  const files = [];
+  for await (const file of provider.listPullRequestFiles(owner, repo, number, { perPage: 100 })) {
+    files.push(file);
+    if (files.length >= MAX_PROMPT_FILES) break;
   }
-
-  const files = await gh.get<PRFileDiff[]>(`/repos/${owner}/${repo}/pulls/${number}/files`);
-  if (!Array.isArray(files) || files.length === 0) {
+  if (files.length === 0) {
     return [];
   }
   const prContext = files
-    .map(f => `File: ${f.filename}\nDiff:\n${f.patch}`)
+    .map(f => `File: ${f.path}\nDiff:\n${f.patch ?? "patch omitted (file unchanged/too large)"}`)
     .join("\n\n");
 
   const { data } = await runTask<{ issues?: unknown }>(

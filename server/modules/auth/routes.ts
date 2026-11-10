@@ -4,7 +4,7 @@ import { safeEqual } from "../../lib/crypto";
 import jwt from "jsonwebtoken";
 import { CLIENT_ORIGINS, ENV, isDev } from "../../config/env";
 import { logger } from "../../config/logger";
-import { User, type UserDocument } from "../../models/User";
+import { User } from "../../models/User";
 import { recordAuditLog } from "../../middleware/auditLog";
 import { setAuthCookie, clearAuthCookie } from "../../middleware/auth";
 import { cookieOptions, OAUTH_STATE_COOKIE_MAX_AGE_MS } from "../../lib/cookies";
@@ -71,18 +71,29 @@ authRouter.get("/auth/github/callback", async (req: Request, res: Response) => {
   try {
     const redirectUri =
     process.env.GITHUB_REDIRECT_URI || `${req.protocol}://${req.get("host")}/api/auth/github/callback`;
+    console.info("[GITHUB OAUTH] Stage 1: Starting token exchange");
+
     const rawToken = await exchangeOAuthCode(
     String(code),
     redirectUri,
     );
+    console.info("[GITHUB OAUTH] Stage 2: Token exchange successful");
     const profile = await fetchGitHubProfile(rawToken);
+    console.info("[GITHUB OAUTH] Stage 3: GitHub profile fetched");
+
     const user = await syncUser(profile, rawToken);
+console.info("[GITHUB OAUTH] Stage 4: MongoDB user sync successful");
 
     // JWT delivered ONLY via httpOnly cookie — never in a URL
     const jwtToken = createSessionToken(user);
+    console.info("[GITHUB OAUTH] Stage 5: JWT generated");
+
     setAuthCookie(res, jwtToken);
+console.info("[GITHUB OAUTH] Stage 6: Auth cookie set");
 
     recordAuditLog(req, { action: "auth.login", targetType: "user", targetId: String(user._id), meta: { provider: "github" } });
+   
+   console.info("[GITHUB OAUTH] Stage 7: Audit log submitted");
     const localFrontend = "http://localhost:5000";
     const frontendUrl =
       ENV.APP_URL ||
@@ -91,7 +102,9 @@ authRouter.get("/auth/github/callback", async (req: Request, res: Response) => {
         : CLIENT_ORIGINS[0]);
     return res.redirect(new URL("/app", frontendUrl).toString());
   } catch (err) {
-    logger.error({ err: (err as Error).message }, "github auth flow failed");
+    const errorDetails = err instanceof Error ? { message: err.message, stack: err.stack } : err;
+    logger.error({ err: errorDetails }, "github auth flow failed");
+    console.error("OAUTH CALLBACK CRASH", errorDetails);
     return res.status(500).json({ message: "Internal server error during auth" });
   }
 });

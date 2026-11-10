@@ -9,7 +9,7 @@ import { ENV } from "../config/env";
 const VERSION = "v1";
 
 function key(): Buffer {
-  const k = Buffer.from(ENV.ENCRYPTION_KEY as string, "hex");
+  const k = Buffer.from((ENV.ENCRYPTION_KEY || "").trim(), "hex");
   if (k.length !== 32) {
     throw new Error("ENCRYPTION_KEY must be a 64-hex-char (32-byte) key");
   }
